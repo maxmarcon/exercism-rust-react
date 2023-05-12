@@ -1,5 +1,6 @@
 use crate::RemoveCallbackError::{NonexistentCallback, NonexistentCell};
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// `InputCellId` is a unique identifier for an input cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,10 @@ pub struct Reactor<'a, T> {
     // You probably want to delete this field.
     inputs: Vec<InputCell<T>>,
     compute_cells: Vec<RefCell<ComputeCell<'a, T>>>,
+    // during a set_value, we're storing all the current values of the compute cells touched by
+    // the update here. After the set_value operation is finished, we check whether the values have changed
+    // and we execute the callbacks if they have
+    values_before_update: RefCell<HashMap<usize, T>>,
 }
 
 struct InputCell<T> {
@@ -62,6 +67,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         Self {
             inputs: Vec::new(),
             compute_cells: Vec::new(),
+            values_before_update: RefCell::new(HashMap::new()),
         }
     }
 
@@ -171,7 +177,6 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     // It turns out this introduces a significant amount of extra complexity to this exercise.
     // We chose not to cover this here, since this exercise is probably enough work as-is.
     pub fn value(&self, id: CellId) -> Option<T> {
-        println!("get_value cell {:?}", id);
         match id {
             CellId::Input(InputCellId(id)) => self.inputs.get(id).map(|cell| cell.value),
             CellId::Compute(ComputeCellId(id)) => {
@@ -189,7 +194,6 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     //
     // As before, that turned out to add too much extra complexity.
     pub fn set_value(&mut self, InputCellId(id): InputCellId, new_value: T) -> bool {
-        println!("set_value input cell {id}");
         if let Some(cell) = self.inputs.get_mut(id) {
             cell.value = new_value;
         } else {
@@ -200,27 +204,40 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
             self.update_value(cell_id, CellId::Input(InputCellId(id)), new_value)
         });
 
+        self.maybe_execute_callbacks();
+        self.values_before_update.borrow_mut().clear();
+
         true
     }
 
+    fn maybe_execute_callbacks(&self) {
+        for (&id, &old_value) in self.values_before_update.borrow().iter() {
+            let mut cell = self.compute_cells[id].borrow_mut();
+            let new_value = cell.value;
+            if new_value != old_value {
+                cell.callbacks
+                    .iter_mut()
+                    .filter(|f| f.is_some())
+                    .for_each(|f| f.as_mut().unwrap()(new_value))
+            }
+        }
+    }
+
     fn update_value(&self, ComputeCellId(id): ComputeCellId, upstream: CellId, upstream_value: T) {
-        println!("update_value compute cell {id}");
         let mut cell = self.compute_cells[id].borrow_mut();
+        self.values_before_update
+            .borrow_mut()
+            .entry(id)
+            .or_insert(cell.value);
         let new_value = (cell.compute_func)(&self.input_values_with_upstream(
             &cell.dependencies,
             upstream,
             upstream_value,
         ));
-        if cell.value != new_value {
-            cell.callbacks
-                .iter_mut()
-                .filter(|f| f.is_some())
-                .for_each(|f| f.as_mut().unwrap()(new_value))
-        }
+        cell.value = new_value;
         cell.downstream.iter().for_each(|&cell_id| {
             self.update_value(cell_id, CellId::Compute(ComputeCellId(id)), new_value)
         });
-        cell.value = new_value;
     }
 
     // Adds a callback to the specified compute cell.
