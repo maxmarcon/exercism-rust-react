@@ -1,4 +1,5 @@
 use crate::RemoveCallbackError::{NonexistentCallback, NonexistentCell};
+use std::cell::RefCell;
 
 /// `InputCellId` is a unique identifier for an input cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,11 +39,18 @@ pub enum RemoveCallbackError {
 pub struct Reactor<'a, T> {
     // Just so that the compiler doesn't complain about an unused type parameter.
     // You probably want to delete this field.
-    inputs: Vec<T>,
-    compute_cells: Vec<ComputeCell<'a, T>>,
+    inputs: Vec<InputCell<T>>,
+    compute_cells: Vec<RefCell<ComputeCell<'a, T>>>,
+}
+
+struct InputCell<T> {
+    value: T,
+    downstream: Vec<ComputeCellId>,
 }
 
 struct ComputeCell<'a, T> {
+    value: T,
+    downstream: Vec<ComputeCellId>,
     dependencies: Vec<CellId>,
     compute_func: Box<dyn 'a + Fn(&[T]) -> T>,
     callbacks: Vec<Option<Box<dyn 'a + FnMut(T)>>>,
@@ -59,7 +67,10 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
 
     // Creates an input cell with the specified initial value, returning its ID.
     pub fn create_input(&mut self, initial: T) -> InputCellId {
-        self.inputs.push(initial);
+        self.inputs.push(InputCell {
+            value: initial,
+            downstream: Vec::new(),
+        });
         InputCellId(self.inputs.len() - 1)
     }
 
@@ -81,22 +92,56 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         dependencies: &[CellId],
         compute_func: F,
     ) -> Result<ComputeCellId, CellId> {
-        let invalid_cell = dependencies.iter().find(|cell_id| match cell_id {
-            CellId::Input(InputCellId(id)) => *id >= self.inputs.len(),
-            CellId::Compute(ComputeCellId(id)) => *id >= self.compute_cells.len(),
-        });
+        if let Some(&cell_id) = dependencies.iter().find(|&&cell_id| !self.valid(cell_id)) {
+            return Err(cell_id);
+        }
 
-        match invalid_cell {
-            Some(cell_id) => Err(*cell_id),
-            None => {
-                let compute_cell = ComputeCell {
-                    dependencies: Vec::from(dependencies),
-                    compute_func: Box::new(compute_func),
-                    callbacks: Vec::new(),
-                };
-                self.compute_cells.push(compute_cell);
-                Ok(ComputeCellId(self.compute_cells.len() - 1))
-            }
+        let compute_cell = ComputeCell {
+            value: compute_func(&self.input_values(dependencies)),
+            downstream: Vec::new(),
+            dependencies: Vec::from(dependencies),
+            compute_func: Box::new(compute_func),
+            callbacks: Vec::new(),
+        };
+        self.compute_cells.push(RefCell::new(compute_cell));
+        let new_cell_id = ComputeCellId(self.compute_cells.len() - 1);
+
+        dependencies
+            .iter()
+            .for_each(|&cell_id| self.add_downstream(cell_id, new_cell_id));
+
+        Ok(new_cell_id)
+    }
+
+    fn valid(&self, cell_id: CellId) -> bool {
+        match cell_id {
+            CellId::Input(InputCellId(id)) => id < self.inputs.len(),
+            CellId::Compute(ComputeCellId(id)) => id < self.compute_cells.len(),
+        }
+    }
+
+    fn input_values(&self, dependencies: &[CellId]) -> Vec<T> {
+        dependencies
+            .iter()
+            .map(|&cell_id| self.value(cell_id).unwrap())
+            .collect()
+    }
+
+    fn add_downstream(&mut self, cell_id: CellId, downstream_cell_id: ComputeCellId) {
+        match cell_id {
+            CellId::Input(InputCellId(id)) => self
+                .inputs
+                .get_mut(id)
+                .unwrap()
+                .downstream
+                .push(downstream_cell_id),
+            CellId::Compute(ComputeCellId(id)) => self
+                .compute_cells
+                .get(id)
+                .unwrap()
+                .borrow_mut()
+                .downstream
+                .push(downstream_cell_id),
         }
     }
 
@@ -109,22 +154,11 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     // We chose not to cover this here, since this exercise is probably enough work as-is.
     pub fn value(&self, id: CellId) -> Option<T> {
         match id {
-            CellId::Input(InputCellId(id)) => self.inputs.get(id).copied(),
-            CellId::Compute(ComputeCellId(id)) => self
-                .compute_cells
-                .get(id)
-                .map(|compute_cell| self.compute(compute_cell)),
+            CellId::Input(InputCellId(id)) => self.inputs.get(id).map(|cell| cell.value),
+            CellId::Compute(ComputeCellId(id)) => {
+                self.compute_cells.get(id).map(|cell| cell.borrow().value)
+            }
         }
-    }
-
-    fn compute(&self, compute_cell: &ComputeCell<T>) -> T {
-        let values: Vec<T> = compute_cell
-            .dependencies
-            .iter()
-            .map(|&cell_id| self.value(cell_id).unwrap())
-            .collect();
-
-        (compute_cell.compute_func)(&values)
     }
 
     // Sets the value of the specified input cell.
@@ -136,10 +170,33 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     //
     // As before, that turned out to add too much extra complexity.
     pub fn set_value(&mut self, InputCellId(id): InputCellId, new_value: T) -> bool {
-        self.inputs.get_mut(id).map_or(false, |el| {
-            *el = new_value;
-            true
-        })
+        if let Some(cell) = self.inputs.get_mut(id) {
+            cell.value = new_value;
+        } else {
+            return false;
+        }
+
+        self.inputs[id]
+            .downstream
+            .iter()
+            .for_each(|&cell_id| self.update_value(cell_id));
+
+        true
+    }
+
+    fn update_value(&self, ComputeCellId(id): ComputeCellId) {
+        let mut cell = self.compute_cells[id].borrow_mut();
+        let new_value = (cell.compute_func)(&self.input_values(&cell.dependencies));
+        if cell.value != new_value {
+            cell.callbacks
+                .iter_mut()
+                .filter(|f| f.is_some())
+                .for_each(|f| f.as_mut().unwrap()(new_value))
+        }
+        cell.value = new_value;
+        cell.downstream
+            .iter()
+            .for_each(|&cell_id| self.update_value(cell_id));
     }
 
     // Adds a callback to the specified compute cell.
@@ -159,9 +216,12 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         ComputeCellId(id): ComputeCellId,
         callback: F,
     ) -> Option<CallbackId> {
-        self.compute_cells.get_mut(id).map_or(None, |compute_cell| {
-            compute_cell.callbacks.push(Some(Box::new(callback)));
-            Some(CallbackId(compute_cell.callbacks.len() - 1))
+        self.compute_cells.get(id).map_or(None, |compute_cell| {
+            compute_cell
+                .borrow_mut()
+                .callbacks
+                .push(Some(Box::new(callback)));
+            Some(CallbackId(compute_cell.borrow().callbacks.len() - 1))
         })
     }
 
@@ -178,16 +238,17 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         self.compute_cells
             .get_mut(cell_id)
             .map_or(Err(NonexistentCell), |compute_cell| {
-                compute_cell.callbacks.get_mut(callback_id).map_or(
-                    Err(NonexistentCell),
-                    |callback| match callback {
+                compute_cell
+                    .borrow_mut()
+                    .callbacks
+                    .get_mut(callback_id)
+                    .map_or(Err(NonexistentCell), |callback| match callback {
                         Some(_) => {
                             *callback = None;
                             Ok(())
                         }
                         None => Err(NonexistentCallback),
-                    },
-                )
+                    })
             })
     }
 }
