@@ -127,6 +127,24 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
             .collect()
     }
 
+    fn input_values_with_upstream(
+        &self,
+        dependencies: &[CellId],
+        upstream: CellId,
+        upstream_value: T,
+    ) -> Vec<T> {
+        dependencies
+            .iter()
+            .map(|&cell_id| {
+                if cell_id == upstream {
+                    upstream_value
+                } else {
+                    self.value(cell_id).unwrap()
+                }
+            })
+            .collect()
+    }
+
     fn add_downstream(&mut self, cell_id: CellId, downstream_cell_id: ComputeCellId) {
         match cell_id {
             CellId::Input(InputCellId(id)) => self
@@ -153,6 +171,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     // It turns out this introduces a significant amount of extra complexity to this exercise.
     // We chose not to cover this here, since this exercise is probably enough work as-is.
     pub fn value(&self, id: CellId) -> Option<T> {
+        println!("get_value cell {:?}", id);
         match id {
             CellId::Input(InputCellId(id)) => self.inputs.get(id).map(|cell| cell.value),
             CellId::Compute(ComputeCellId(id)) => {
@@ -170,33 +189,38 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     //
     // As before, that turned out to add too much extra complexity.
     pub fn set_value(&mut self, InputCellId(id): InputCellId, new_value: T) -> bool {
+        println!("set_value input cell {id}");
         if let Some(cell) = self.inputs.get_mut(id) {
             cell.value = new_value;
         } else {
             return false;
         }
 
-        self.inputs[id]
-            .downstream
-            .iter()
-            .for_each(|&cell_id| self.update_value(cell_id));
+        self.inputs[id].downstream.iter().for_each(|&cell_id| {
+            self.update_value(cell_id, CellId::Input(InputCellId(id)), new_value)
+        });
 
         true
     }
 
-    fn update_value(&self, ComputeCellId(id): ComputeCellId) {
+    fn update_value(&self, ComputeCellId(id): ComputeCellId, upstream: CellId, upstream_value: T) {
+        println!("update_value compute cell {id}");
         let mut cell = self.compute_cells[id].borrow_mut();
-        let new_value = (cell.compute_func)(&self.input_values(&cell.dependencies));
+        let new_value = (cell.compute_func)(&self.input_values_with_upstream(
+            &cell.dependencies,
+            upstream,
+            upstream_value,
+        ));
         if cell.value != new_value {
             cell.callbacks
                 .iter_mut()
                 .filter(|f| f.is_some())
                 .for_each(|f| f.as_mut().unwrap()(new_value))
         }
+        cell.downstream.iter().for_each(|&cell_id| {
+            self.update_value(cell_id, CellId::Compute(ComputeCellId(id)), new_value)
+        });
         cell.value = new_value;
-        cell.downstream
-            .iter()
-            .for_each(|&cell_id| self.update_value(cell_id));
     }
 
     // Adds a callback to the specified compute cell.
