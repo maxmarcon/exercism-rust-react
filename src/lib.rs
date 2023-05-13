@@ -5,6 +5,7 @@ use std::collections::HashMap;
 /// `InputCellId` is a unique identifier for an input cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputCellId(usize);
+
 /// `ComputeCellId` is a unique identifier for a compute cell.
 /// Values of type `InputCellId` and `ComputeCellId` should not be mutually assignable,
 /// demonstrated by the following tests:
@@ -103,7 +104,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         }
 
         let compute_cell = ComputeCell {
-            value: compute_func(&self.input_values(dependencies)),
+            value: compute_func(&self.values_from_dependencies(dependencies)),
             downstream: Vec::new(),
             dependencies: Vec::from(dependencies),
             compute_func: Box::new(compute_func),
@@ -114,7 +115,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
 
         dependencies
             .iter()
-            .for_each(|&cell_id| self.add_downstream(cell_id, new_cell_id));
+            .for_each(|&cell_id| self.add_downstream_cell(cell_id, new_cell_id));
 
         Ok(new_cell_id)
     }
@@ -126,14 +127,14 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         }
     }
 
-    fn input_values(&self, dependencies: &[CellId]) -> Vec<T> {
+    fn values_from_dependencies(&self, dependencies: &[CellId]) -> Vec<T> {
         dependencies
             .iter()
             .map(|&cell_id| self.value(cell_id).unwrap())
             .collect()
     }
 
-    fn input_values_with_upstream(
+    fn values_from_dependencies_and_upstream(
         &self,
         dependencies: &[CellId],
         upstream: CellId,
@@ -151,7 +152,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
             .collect()
     }
 
-    fn add_downstream(&mut self, cell_id: CellId, downstream_cell_id: ComputeCellId) {
+    fn add_downstream_cell(&mut self, cell_id: CellId, downstream_cell_id: ComputeCellId) {
         match cell_id {
             CellId::Input(InputCellId(id)) => self
                 .inputs
@@ -229,7 +230,7 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
             .borrow_mut()
             .entry(id)
             .or_insert(cell.value);
-        let new_value = (cell.compute_func)(&self.input_values_with_upstream(
+        let new_value = (cell.compute_func)(&self.values_from_dependencies_and_upstream(
             &cell.dependencies,
             upstream,
             upstream_value,
