@@ -237,15 +237,16 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         }
 
         let compute_cell = &mut self.compute_cells[cell_id.0 as usize];
-        compute_cell.callbacks.get_mut(callback_id as usize).map_or(
-            Err(NonexistentCallback),
-            |callback| match callback {
-                None => Err(NonexistentCallback),
-                callback => {
-                    *callback = None;
-                    Ok(())
-                }
-            },
-        )
+        let callback = compute_cell
+            .callbacks
+            .get_mut(callback_id as usize)
+            .ok_or(NonexistentCallback)?;
+
+        if callback.is_some() {
+            *callback = None;
+            Ok(())
+        } else {
+            Err(NonexistentCallback)
+        }
     }
 }
