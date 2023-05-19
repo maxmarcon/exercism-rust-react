@@ -110,12 +110,12 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         };
         self.compute_cells.insert(new_cell_id, compute_cell);
 
-        for &dep_id in dependencies {
+        dependencies.iter().for_each(|dep_id| {
             self.compute_matrix
-                .entry(dep_id)
+                .entry(*dep_id)
                 .or_default()
                 .push(new_cell_id);
-        }
+        });
 
         Ok(new_cell_id)
     }
@@ -177,26 +177,26 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
                 .or_insert(compute_cell.value);
             compute_cell.value = (compute_cell.compute_func)(&values);
 
-            for downstream in self
-                .compute_matrix
+            self.compute_matrix
                 .entry(CellId::Compute(compute_cell_id))
                 .or_default()
-            {
-                to_recompute.push_back(*downstream);
-            }
+                .iter()
+                .for_each(|downstram| to_recompute.push_back(*downstram))
         }
 
-        for (compute_cell_id, old_value) in maybe_changed {
-            let new_value = self.value(CellId::Compute(compute_cell_id)).unwrap();
-            if old_value != new_value {
-                self.compute_cells
-                    .get_mut(&compute_cell_id)
-                    .unwrap()
-                    .callbacks
-                    .values_mut()
-                    .for_each(|callback| (*callback)(new_value))
-            }
-        }
+        maybe_changed
+            .into_iter()
+            .for_each(|(compute_cell_id, old_value)| {
+                let new_value = self.value(CellId::Compute(compute_cell_id)).unwrap();
+                if old_value != new_value {
+                    self.compute_cells
+                        .get_mut(&compute_cell_id)
+                        .unwrap()
+                        .callbacks
+                        .values_mut()
+                        .for_each(|callback| (*callback)(new_value))
+                }
+            });
 
         true
     }
