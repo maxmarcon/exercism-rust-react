@@ -91,12 +91,10 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
         dependencies: &[CellId],
         compute_func: F,
     ) -> Result<ComputeCellId, CellId> {
-        if let Some(&cell_id) = dependencies
+        dependencies
             .iter()
             .find(|&&cell_id| self.value(cell_id).is_none())
-        {
-            return Err(cell_id);
-        }
+            .map_or(Ok(()), |cell_id| Err(*cell_id))?;
 
         let new_cell_id = ComputeCellId(self.next_cell_id);
         self.next_cell_id += 1;
