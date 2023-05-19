@@ -44,9 +44,11 @@ pub struct Reactor<'a, T> {
     next_cell_id: u32,
 }
 
+type ComputeFun<'a, T> = Box<dyn 'a + Fn(&[T]) -> T>;
+
 struct ComputeCell<'a, T> {
     value: T,
-    compute_func: Box<dyn 'a + Fn(&[T]) -> T>,
+    compute_func: ComputeFun<'a, T>,
     dependencies: Vec<CellId>,
     callbacks: HashMap<CallbackId, Box<dyn 'a + FnMut(T)>>,
     next_callback_id: u32,
@@ -218,13 +220,13 @@ impl<'a, T: Copy + PartialEq> Reactor<'a, T> {
     ) -> Option<CallbackId> {
         self.compute_cells
             .get_mut(&compute_cell_id)
-            .and_then(|compute_cell| {
+            .map(|compute_cell| {
                 let callback_id = CallbackId(compute_cell.next_callback_id);
                 compute_cell.next_callback_id += 1;
                 compute_cell
                     .callbacks
                     .insert(callback_id, Box::new(callback));
-                Some(callback_id)
+                callback_id
             })
     }
 
