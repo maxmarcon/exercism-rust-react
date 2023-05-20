@@ -44,11 +44,9 @@ pub struct Reactor<'a, T> {
     next_cell_id: u32,
 }
 
-type ComputeFun<'a, T> = Box<dyn 'a + Fn(&[T]) -> T>;
-
 struct ComputeCell<'a, T> {
     value: T,
-    compute_func: ComputeFun<'a, T>,
+    compute_func: Box<dyn 'a + Fn(&[T]) -> T>,
     dependencies: Vec<CellId>,
     callbacks: HashMap<CallbackId, Box<dyn 'a + FnMut(T)>>,
     next_callback_id: u32,
